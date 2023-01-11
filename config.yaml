@@ -1,0 +1,19 @@
+mongo:
+  host: localhost:27017
+  input:
+    db: OpenFoodFacts
+    collection: Products
+    fields: ["_id", "product_name", "nova_group", "nutriscore_score", "nutriments.*"]
+  output:
+    db: OpenFoodFacts
+    collection: Predictions
+  package: org.mongodb.spark:mongo-spark-connector:10.0.5
+
+spark:
+  master: local
+  app_name: off
+
+n_samples: 100000
+n_clusters: 10
+test_size: 0.2
+random_seed: 42
