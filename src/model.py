@@ -1,15 +1,17 @@
-from pyspark.sql import SparkSession, DataFrame
 import sys
-from pyspark.sql.types import DoubleType, IntegerType
-from pyspark.ml.functions import vector_to_array
-from pyspark.sql import functions as F
-from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
-from pyspark.ml import Pipeline
-from pyspark.ml.clustering import KMeans
-from logger import Logger
 import traceback
 from typing import List, Tuple
+
 import yaml
+from pyspark.ml import Pipeline
+from pyspark.ml.clustering import KMeans
+from pyspark.ml.feature import Imputer, StandardScaler, VectorAssembler
+from pyspark.ml.functions import vector_to_array
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
+from pyspark.sql.types import DoubleType, IntegerType
+
+from logger import Logger
 
 SHOW_LOG = True
 
@@ -25,15 +27,11 @@ class Model:
             sys.exit(1)
 
         try:
-            mongo_input_string = \
-                f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['input']['db']}.{self.config['mongo']['input']['collection']}"
-            mongo_output_string = \
-                f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['output']['db']}.{self.config['mongo']['output']['collection']}"
+            mongo_input_string = f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['input']['db']}.{self.config['mongo']['input']['collection']}"
+            mongo_output_string = f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['output']['db']}.{self.config['mongo']['output']['collection']}"
 
             self.spark = (
-                SparkSession
-                .builder
-                .master(self.config["spark"]["master"])
+                SparkSession.builder.master(self.config["spark"]["master"])
                 .appName(self.config["spark"]["app_name"])
                 .config("spark.mongodb.input.uri", mongo_input_string)
                 .config("spark.mongodb.output.uri", mongo_output_string)
@@ -45,10 +43,10 @@ class Model:
             self.log.error("Unable to create Spark Session. Check configuration file")
             sys.exit(1)
         try:
-            self.n_samples = self.config['n_samples']
-            self.n_clusters = self.config['n_clusters']
-            self.random_seed = self.config['random_seed']
-            self.test_size = self.config['test_size']
+            self.n_samples = self.config["n_samples"]
+            self.n_clusters = self.config["n_clusters"]
+            self.random_seed = self.config["random_seed"]
+            self.test_size = self.config["test_size"]
             self.input_fields = self.config["mongo"]["input"]["fields"]
             self.log.info("Model initialized.")
         except:
@@ -60,9 +58,7 @@ class Model:
     def load_data(self) -> bool:
         try:
             self.data = (
-                self.spark
-                .read
-                .format("mongo")
+                self.spark.read.format("mongo")
                 .load()
                 .limit(self.n_samples)
                 .select(self.input_fields)
@@ -74,13 +70,8 @@ class Model:
 
     def split_data(self) -> Tuple[DataFrame, DataFrame]:
         try:
-            train, test = (
-                self
-                .data
-                .randomSplit(
-                    weights=[1 - self.test_size, self.test_size],
-                    seed=self.random_seed
-                )
+            train, test = self.data.randomSplit(
+                weights=[1 - self.test_size, self.test_size], seed=self.random_seed
             )
         except:
             self.log.error("Unable to split data")
@@ -90,17 +81,15 @@ class Model:
     @staticmethod
     def drop_null_columns(df: DataFrame, thresh: int) -> DataFrame:
         null_counts = (
-            df
-            .select([
-                F.count(
-                    F.when(F.col(c).isNull(), c)
-                )
-                .alias(c)
-                for c in df.columns
-            ])
-            .collect()[0].asDict()
+            df.select(
+                [F.count(F.when(F.col(c).isNull(), c)).alias(c) for c in df.columns]
+            )
+            .collect()[0]
+            .asDict()
         )
-        columns_to_drop = [name for name, count in null_counts.items() if count >= thresh]
+        columns_to_drop = [
+            name for name, count in null_counts.items() if count >= thresh
+        ]
         df = df.drop(*columns_to_drop)
         return df
 
@@ -110,8 +99,8 @@ class Model:
             f.name
             for f in df.schema.fields
             if not isinstance(f.dataType, DoubleType)
-               and not isinstance(f.dataType, IntegerType)
-               and f.name not in exclude
+            and not isinstance(f.dataType, IntegerType)
+            and f.name not in exclude
         ]
         df = df.drop(*non_num_cols)
         return df
@@ -119,15 +108,29 @@ class Model:
     def fit(self) -> None:
         try:
             thresh = 0.5 * self.n_samples
+            # Dropping columns with >50% null values and non-numeric columns
             self.data = Model.drop_null_columns(self.data, thresh)
-            self.data = Model.drop_non_numeric_columns(self.data, ["_id", "product_name"])
-            input_cols = [col for col in self.data.columns if col not in ["_id", "product_name"]]
-            self.pipeline = Pipeline(stages=[
-                Imputer(inputCols=input_cols, outputCols=input_cols),
-                VectorAssembler(inputCols=input_cols, outputCol="vect"),
-                StandardScaler(withMean=True, inputCol="vect", outputCol="norm"),
-                KMeans(featuresCol="norm", predictionCol="pred", k=self.n_clusters, seed=self.random_seed)
-            ])
+            self.data = Model.drop_non_numeric_columns(
+                self.data, ["_id", "product_name"]
+            )
+            input_cols = [
+                col for col in self.data.columns if col not in ["_id", "product_name"]
+            ]
+
+            # Imputing missing fields with mean, then applying standard scaling
+            self.pipeline = Pipeline(
+                stages=[
+                    Imputer(inputCols=input_cols, outputCols=input_cols),
+                    VectorAssembler(inputCols=input_cols, outputCol="vect"),
+                    StandardScaler(withMean=True, inputCol="vect", outputCol="norm"),
+                    KMeans(
+                        featuresCol="norm",
+                        predictionCol="pred",
+                        k=self.n_clusters,
+                        seed=self.random_seed,
+                    ),
+                ]
+            )
             self.log.info("Pipeline initialized successfully.")
         except:
             self.log.error(traceback.format_exc())
@@ -153,25 +156,17 @@ class Model:
         return predictions
 
     def write(self, data: DataFrame) -> bool:
-        data_to_write = (
-            data
-            .withColumn("timestamp", F.current_timestamp())
-            .select([
+        data_to_write = data.withColumn("timestamp", F.current_timestamp()).select(
+            [
                 F.col("_id").alias("product_id"),
                 "product_name",
                 "timestamp",
                 vector_to_array(F.col("norm")).alias("features"),
-                "pred"
-            ])
+                "pred",
+            ]
         )
         try:
-            (
-                data_to_write
-                .write
-                .format("mongo")
-                .mode("overwrite")
-                .save()
-            )
+            (data_to_write.write.format("mongo").mode("overwrite").save())
             return True
         except:
             self.log.error(traceback.format_exc())
