@@ -1,7 +1,8 @@
 import sys
+import json
 import traceback
 from typing import List, Tuple
-
+from dataloader import DataLoader
 import yaml
 from pyspark.ml import Pipeline
 from pyspark.ml.clustering import KMeans
@@ -17,7 +18,7 @@ SHOW_LOG = True
 
 
 class Model:
-    def __init__(self, config_path: str) -> None:
+    def __init__(self, config_path: str, credentials_path) -> None:
         self.log = Logger(SHOW_LOG).get_logger(__name__)
         try:
             with open(config_path, "r") as f:
@@ -25,21 +26,16 @@ class Model:
         except:
             self.log.error("Unable to load config")
             sys.exit(1)
-
         try:
-            mongo_input_string = f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['input']['db']}.{self.config['mongo']['input']['collection']}"
-            mongo_output_string = f"mongodb://{self.config['mongo']['host']}/{self.config['mongo']['output']['db']}.{self.config['mongo']['output']['collection']}"
-
-            self.spark = (
-                SparkSession.builder.master(self.config["spark"]["master"])
-                .appName(self.config["spark"]["app_name"])
-                .config("spark.mongodb.input.uri", mongo_input_string)
-                .config("spark.mongodb.output.uri", mongo_output_string)
-                .config("spark.jars.packages", self.config["mongo"]["package"])
-                .getOrCreate()
-            )
+            with open(credentials_path, "r") as f:
+                credentials = json.load(f)
         except:
-            traceback.format_exc()
+            self.log.error("Unable to load credentials")
+            sys.exit(1)
+        try:
+            self.dataloader = DataLoader(self.config["spark"], self.config["mongo"], credentials)
+        except:
+            self.log.error(traceback.format_exc())
             self.log.error("Unable to create Spark Session. Check configuration file")
             sys.exit(1)
         try:
@@ -47,7 +43,6 @@ class Model:
             self.n_clusters = self.config["n_clusters"]
             self.random_seed = self.config["random_seed"]
             self.test_size = self.config["test_size"]
-            self.input_fields = self.config["mongo"]["input"]["fields"]
             self.log.info("Model initialized.")
         except:
             self.log.error("Unable to load model parameters. Check configuration file")
@@ -57,12 +52,7 @@ class Model:
 
     def load_data(self) -> bool:
         try:
-            self.data = (
-                self.spark.read.format("mongo")
-                .load()
-                .limit(self.n_samples)
-                .select(self.input_fields)
-            )
+            self.data = self.dataloader.read(self.n_samples)
             return True
         except:
             self.log.error(traceback.format_exc())
@@ -166,7 +156,7 @@ class Model:
             ]
         )
         try:
-            (data_to_write.write.format("mongo").mode("overwrite").save())
+            self.dataloader.write(data_to_write)
             return True
         except:
             self.log.error(traceback.format_exc())
